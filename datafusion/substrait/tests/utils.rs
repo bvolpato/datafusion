@@ -126,22 +126,10 @@ pub mod test {
         }
 
         fn collect_named_table(&mut self, read: &ReadRel, nt: &NamedTable) -> Result<()> {
-            let table_reference = match nt.names.len() {
-                0 => {
-                    panic!("No table name found in NamedTable");
-                }
-                1 => TableReference::Bare {
-                    table: nt.names[0].clone().into(),
-                },
-                2 => TableReference::Partial {
-                    schema: nt.names[0].clone().into(),
-                    table: nt.names[1].clone().into(),
-                },
-                _ => TableReference::Full {
-                    catalog: nt.names[0].clone().into(),
-                    schema: nt.names[1].clone().into(),
-                    table: nt.names[2].clone().into(),
-                },
+            let table_reference = if nt.names.is_empty() {
+                panic!("No table name found in NamedTable");
+            } else {
+                TableReference::parse_str(&nt.names.join("."))
             };
 
             let substrait_schema =

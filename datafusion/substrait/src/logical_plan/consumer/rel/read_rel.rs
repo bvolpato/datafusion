@@ -86,22 +86,15 @@ pub async fn from_read_rel(
 
     match &read.read_type {
         Some(ReadType::NamedTable(nt)) => {
-            let table_reference = match nt.names.len() {
-                0 => {
-                    return plan_err!("No table name found in NamedTable");
-                }
-                1 => TableReference::Bare {
-                    table: nt.names[0].clone().into(),
-                },
-                2 => TableReference::Partial {
-                    schema: nt.names[0].clone().into(),
-                    table: nt.names[1].clone().into(),
-                },
-                _ => TableReference::Full {
-                    catalog: nt.names[0].clone().into(),
-                    schema: nt.names[1].clone().into(),
-                    table: nt.names[2].clone().into(),
-                },
+            // Normalize table names using DataFusion's identifier normalization
+            // (via TableReference::parse_str). Since Substrait has no concept of
+            // quoted identifiers, all names are treated as unquoted — this ensures
+            // interoperability with producers like Calcite/Isthmus that emit
+            // uppercase names (e.g. "LINEITEM" -> "lineitem").
+            let table_reference = if nt.names.is_empty() {
+                return plan_err!("No table name found in NamedTable");
+            } else {
+                TableReference::parse_str(&nt.names.join("."))
             };
 
             read_with_schema(
