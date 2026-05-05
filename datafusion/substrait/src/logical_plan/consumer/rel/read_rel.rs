@@ -35,6 +35,28 @@ use substrait::proto::read_rel::local_files::file_or_files::PathType::UriFile;
 use substrait::proto::{Expression, ReadRel};
 use url::Url;
 
+fn normalized_substrait_name(name: &str) -> Arc<str> {
+    name.to_ascii_lowercase().into()
+}
+
+fn named_table_reference(names: &[String]) -> Option<TableReference> {
+    match names {
+        [] => None,
+        [table] => Some(TableReference::Bare {
+            table: normalized_substrait_name(table),
+        }),
+        [schema, table] => Some(TableReference::Partial {
+            schema: normalized_substrait_name(schema),
+            table: normalized_substrait_name(table),
+        }),
+        [catalog, schema, table, ..] => Some(TableReference::Full {
+            catalog: normalized_substrait_name(catalog),
+            schema: normalized_substrait_name(schema),
+            table: normalized_substrait_name(table),
+        }),
+    }
+}
+
 #[expect(deprecated)]
 pub async fn from_read_rel(
     consumer: &impl SubstraitConsumer,
@@ -86,15 +108,10 @@ pub async fn from_read_rel(
 
     match &read.read_type {
         Some(ReadType::NamedTable(nt)) => {
-            // Normalize table names using DataFusion's identifier normalization
-            // (via TableReference::parse_str). Since Substrait has no concept of
-            // quoted identifiers, all names are treated as unquoted — this ensures
-            // interoperability with producers like Calcite/Isthmus that emit
-            // uppercase names (e.g. "LINEITEM" -> "lineitem").
-            let table_reference = if nt.names.is_empty() {
+            // Substrait NamedTable names are separate unquoted identifiers.
+            // Normalize each part while preserving the historical arity mapping.
+            let Some(table_reference) = named_table_reference(&nt.names) else {
                 return plan_err!("No table name found in NamedTable");
-            } else {
-                TableReference::parse_str(&nt.names.join("."))
             };
 
             read_with_schema(
@@ -327,5 +344,43 @@ fn apply_projection(
             Ok(LogicalPlan::TableScan(scan))
         }
         _ => plan_err!("DataFrame passed to apply_projection must be a TableScan"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_table_reference_normalizes_names() {
+        assert_eq!(
+            named_table_reference(&["LINEITEM".to_string()]),
+            Some(TableReference::bare("lineitem"))
+        );
+        assert_eq!(
+            named_table_reference(&["SALES".to_string(), "LINEITEM".to_string()]),
+            Some(TableReference::partial("sales", "lineitem"))
+        );
+        assert_eq!(
+            named_table_reference(&[
+                "CATALOG".to_string(),
+                "SALES".to_string(),
+                "LINEITEM".to_string(),
+            ]),
+            Some(TableReference::full("catalog", "sales", "lineitem"))
+        );
+    }
+
+    #[test]
+    fn named_table_reference_preserves_existing_extra_name_behavior() {
+        assert_eq!(
+            named_table_reference(&[
+                "CATALOG".to_string(),
+                "SALES".to_string(),
+                "LINEITEM".to_string(),
+                "IGNORED".to_string(),
+            ]),
+            Some(TableReference::full("catalog", "sales", "lineitem"))
+        );
     }
 }
